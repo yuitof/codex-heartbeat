@@ -37,6 +37,10 @@ if mode == 'stderr-limit':
     print('HTTP 429 quota exceeded', file=sys.stderr)
 if mode == 'empty': sys.exit(0)
 if mode == 'malformed': print('OK'); sys.exit(0)
+if mode == 'quoted':
+    emit({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': os.environ['FAKE_REPLY']}})
+    emit({'type': 'turn.completed'})
+    sys.exit(0)
 if mode == 'tool':
     emit({'type': 'item.started', 'item': {'type': 'command_execution', 'command': 'touch unwanted'}})
 if mode == 'error-with-ok': emit({'type': 'error', 'message': 'stream failed'})
@@ -61,6 +65,14 @@ if action == 'bootstrap':
 if action == 'bootout': (active / sys.argv[2].split('/')[-1]).unlink(missing_ok=True)
 '''
 
+FAKE_OSASCRIPT = r'''#!/usr/bin/env python3
+import json, os, sys, time
+with open(os.environ['FAKE_NOTIFICATIONS'], 'a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\n')
+if os.environ.get('FAKE_NOTIFY_MODE') == 'timeout': time.sleep(30)
+sys.exit(1 if os.environ.get('FAKE_NOTIFY_MODE') == 'fail' else 0)
+'''
+
 
 class HeartbeatTests(unittest.TestCase):
     def setUp(self):
@@ -77,6 +89,10 @@ class HeartbeatTests(unittest.TestCase):
         self.launch = self.base / "launchctl"
         self.launch.write_text(FAKE_LAUNCHCTL)
         self.launch.chmod(0o700)
+        self.notifier = self.base / "fake osascript"
+        self.notifier.write_text(FAKE_OSASCRIPT)
+        self.notifier.chmod(0o700)
+        self.notifications = self.base / "notifications"
         self.env = dict(os.environ, HEARTBEAT_STATE_DIR=str(self.state),
                         HEARTBEAT_LOG_DIR=str(self.logs), HEARTBEAT_CODEX_BIN=str(self.fake),
                         FAKE_CALLS=str(self.calls), FAKE_ORPHAN=str(self.base / "orphan"),
@@ -84,7 +100,9 @@ class HeartbeatTests(unittest.TestCase):
                         HEARTBEAT_AGENTS_DIR=str(self.base / "agents"),
                         HEARTBEAT_LAUNCHCTL=str(self.launch),
                         FAKE_ACTIVE=str(self.base / "active"),
-                        FAKE_LAUNCH_CALLS=str(self.base / "launch-calls"))
+                        FAKE_LAUNCH_CALLS=str(self.base / "launch-calls"),
+                        HEARTBEAT_OSASCRIPT=str(self.notifier),
+                        FAKE_NOTIFICATIONS=str(self.notifications))
 
     def run_script(self, mode="success", script=SCRIPT, args=(), expected=0, **extra):
         result = subprocess.run(["/bin/bash", str(script), *args],
@@ -102,6 +120,9 @@ class HeartbeatTests(unittest.TestCase):
     def count(self):
         return len(self.calls.read_text().splitlines()) if self.calls.exists() else 0
 
+    def read_notifications(self):
+        return [json.loads(line) for line in self.notifications.read_text().splitlines()] if self.notifications.exists() else []
+
     def install_and_arm(self):
         self.run_script(script=CTL, args=("install",))
         self.arm()
@@ -117,6 +138,7 @@ class HeartbeatTests(unittest.TestCase):
         self.run_script()
         self.assertGreaterEqual(self.read_stamp("last-success"), before)
         self.assertEqual(self.count(), 1)
+        self.assertEqual(self.read_notifications()[0][1:], ['Succeeded; next heartbeat in 5h 2m', 'OK'])
         args = json.loads(self.calls.read_text())
         for value in ("exec", "--ephemeral", "--json", "--ignore-user-config", "--ignore-rules", "read-only", "forced_login_method=\"chatgpt\"", "shell_tool", "hooks", "plugins"):
             self.assertIn(value, args)
@@ -124,6 +146,7 @@ class HeartbeatTests(unittest.TestCase):
         self.assertFalse(list(self.state.glob("run.*")))
         self.run_script()
         self.assertEqual(self.count(), 1)
+        self.assertEqual(len(self.read_notifications()), 1)
 
     def test_not_due_and_status_never_invoke_codex(self):
         self.stamp("last-success", int(time.time()) - 18100)
@@ -131,11 +154,55 @@ class HeartbeatTests(unittest.TestCase):
         result = self.run_script(args=("status",))
         self.assertIn("due in", result.stdout)
         self.assertEqual(self.count(), 0)
+        self.assertEqual(self.read_notifications(), [])
 
     def test_due_after_302_minutes(self):
         self.stamp("last-success", int(time.time()) - 18121)
         self.run_script()
         self.assertEqual(self.count(), 1)
+
+    def test_notification_includes_usage_or_network_error(self):
+        for mode, message in (("usage", "You've hit your usage limit. Weekly limit reached."),
+                              ("network", "connection reset by peer"),
+                              ("error-with-ok", "stream failed"),
+                              ("empty", "No Codex reply was received (invalid-response).")):
+            with self.subTest(mode=mode):
+                self.stamp("last-attempt", int(time.time()) - 1000)
+                self.run_script(mode=mode, expected=1)
+                notice = self.read_notifications()[-1]
+                self.assertIn("Failed:", notice[1])
+                self.assertEqual(notice[2], message)
+
+    def test_notification_text_is_unicode_data_and_bounded(self):
+        # Quotes, shell substitutions and AppleScript are passed as arguments.
+        reply = '日本語 " \\ $(touch forbidden) `touch forbidden`\nend run\ndo shell script "touch forbidden"'
+        self.run_script(mode="quoted", expected=1, FAKE_REPLY=reply)
+        self.assertEqual(self.read_notifications()[-1][2], reply)
+        self.stamp("last-attempt", int(time.time()) - 1000)
+        self.run_script(mode="quoted", expected=1, FAKE_REPLY="あ" * 800)
+        self.assertEqual(self.read_notifications()[-1][2], "あ" * 499 + "…")
+
+    def test_notification_failure_does_not_change_success_or_retry(self):
+        self.run_script(FAKE_NOTIFY_MODE="fail")
+        self.assertTrue((self.state / "last-success").exists())
+        self.assertIn("notification submission failed", (self.logs / "heartbeat.log").read_text())
+        self.stamp("last-success", int(time.time()) - 20000)
+        self.stamp("last-attempt", int(time.time()) - 1000)
+        self.run_script(mode="usage", expected=1, FAKE_NOTIFY_MODE="fail")
+        self.assertLess(self.read_stamp("last-success"), int(time.time()) - 18000)
+        count = self.count()
+        self.run_script()
+        self.assertEqual(self.count(), count)
+
+    def test_notification_timeout_does_not_change_success(self):
+        self.run_script(FAKE_NOTIFY_MODE="timeout")
+        self.assertTrue((self.state / "last-success").exists())
+        self.assertIn("notification submission failed", (self.logs / "heartbeat.log").read_text())
+
+    def test_notification_test_never_invokes_codex(self):
+        self.run_script(script=CTL, args=("test-notification",))
+        self.assertEqual(self.count(), 0)
+        self.assertEqual(len(self.read_notifications()), 1)
 
     def test_elapsed_sleep_gap_simulation(self):
         # This tests elapsed-time logic only, NOT actual macOS sleep/wake.
@@ -180,6 +247,7 @@ class HeartbeatTests(unittest.TestCase):
             out, err = proc.communicate(timeout=10)
             self.assertEqual(proc.returncode, 0, (out, err))
         self.assertEqual(self.count(), 1)
+        self.assertEqual(len(self.read_notifications()), 1)
 
     def test_lock_retained_when_parent_is_killed(self):
         proc = subprocess.Popen(["/bin/bash", str(SCRIPT)], env=dict(self.env, FAKE_MODE="slow"),
@@ -215,6 +283,7 @@ class HeartbeatTests(unittest.TestCase):
         self.run_script(expected=1, HEARTBEAT_CODEX_BIN="/nonexistent", PATH="/usr/bin:/bin")
         self.assertFalse((self.state / "last-success").exists())
         self.assertIn("executable-not-found", (self.logs / "heartbeat.log").read_text())
+        self.assertIn("Codex could not be started", self.read_notifications()[0][2])
         self.run_script()
         self.assertEqual(self.count(), 0)
 
@@ -229,6 +298,9 @@ class HeartbeatTests(unittest.TestCase):
         success = int(time.time())
         self.stamp("last-success", success)
         for _ in range(2): self.install_and_arm()
+        installed = Path(self.env["HEARTBEAT_BASE_DIR"])
+        for relative in ("lib/notify.applescript", "lib/notifications.sh"):
+            self.assertEqual((installed / relative).read_bytes(), (ROOT / relative).read_bytes())
         plist = Path(self.env["HEARTBEAT_AGENTS_DIR"]) / "local.codex-heartbeat.plist"
         data = plistlib.loads(plist.read_bytes())
         self.assertEqual(set(data["StartCalendarInterval"]), {"Month", "Day", "Hour", "Minute"})

@@ -24,6 +24,7 @@ From this directory:
 ./bin/heartbeatctl install
 ./bin/heartbeatctl status
 ./bin/heartbeatctl logs
+./bin/heartbeatctl test-notification
 ./bin/heartbeatctl uninstall
 ```
 
@@ -138,6 +139,33 @@ crash. Clock adjustments backwards defer requests conservatively, and invalid
 state fails closed. The heartbeat log rotates at 1 MiB and retains one backup.
 Launchd's separate diagnostic log is normally empty; it is not rotated here.
 
+## Notifications
+
+Each heartbeat attempt sends a local macOS Notification Center notification
+titled **Codex Heartbeat**, showing Codex's reply (`OK` on success) or its error
+on failure. The subtitle shows success and the next interval, or failure and the
+15-minute retry. Local eligibility checks, status commands and scheduling work
+stay silent. No external push service or extra model request is used.
+
+Notifications use macOS's built-in `osascript` and
+[AppleScript `display notification`](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/DisplayNotifications.html).
+Reply text is passed as arguments rather than executable script, and is shortened
+to 500 characters. If there is no reply or structured error, the notification
+uses the last diagnostic line or a message saying no reply was received.
+Notification submission is limited to 10 seconds; failure is logged and does not
+change heartbeat success, timestamps or retries.
+
+To check notifications without calling Codex:
+
+```bash
+./bin/heartbeatctl test-notification
+```
+
+If banners do not appear, check **System Settings → Notifications** for the script
+or Script Editor entry and check Focus settings. macOS can accept a notification
+without displaying a banner. The heartbeat log records submission, which does
+not confirm that a banner was visible.
+
 ## Verification
 
 ```bash
@@ -145,6 +173,7 @@ bash -n bin/heartbeat.sh bin/heartbeatctl
 perl -c lib/heartbeat.pl
 python3 tests/test_heartbeat.py
 python3 tests/test_launchd.py
+python3 tests/test_notifications_macos.py
 ```
 
 The offline suite uses a fake Codex and temporary state to check timing,
@@ -155,6 +184,9 @@ dated calendar firing, a 15-minute failure retry schedule, immediate recovery of
 an overdue retry, the subsequent success schedule, and an idle minute with no
 worker executions. It then unloads both agents and invokes only the fake Codex.
 It takes a few minutes and requires permission to register user LaunchAgents.
+The notification integration test submits one real test notification from a
+temporary launchd job without invoking Codex, then removes the test job. The
+offline suite replaces `osascript` with a fake to avoid notifications during tests.
 
 See [TESTING.md](TESTING.md) for the observed results and remaining manual checks.
 
@@ -175,7 +207,8 @@ These are manual acceptance procedures; a simulated elapsed-time gap is not proo
 of physical sleep/wake behavior.
 
 For isolated testing, the scripts accept `HEARTBEAT_STATE_DIR`,
-`HEARTBEAT_LOG_DIR`, `HEARTBEAT_CODEX_BIN`, `HEARTBEAT_TIMEOUT_SECONDS`, and the
+`HEARTBEAT_LOG_DIR`, `HEARTBEAT_CODEX_BIN`, `HEARTBEAT_TIMEOUT_SECONDS`,
+`HEARTBEAT_OSASCRIPT` (notification test executable), and the
 installer additionally accepts `HEARTBEAT_BASE_DIR`, `HEARTBEAT_AGENTS_DIR`,
 `HEARTBEAT_LAUNCHCTL` and `HEARTBEAT_LABEL`. Normal installation requires none of
 these overrides. Custom base, state, agent paths and labels are carried through

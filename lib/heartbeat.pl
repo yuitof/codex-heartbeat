@@ -96,6 +96,41 @@ if ($mode eq 'validate') {
     print "$result\n";
     exit 0;
 }
+if ($mode eq 'notification-text') {
+    my ($events, $stderr, $result) = @ARGV;
+    my ($reply, $error, $diagnostic) = ('', '', '');
+    open(my $stream, '<', $events) or die "$events: $!\n";
+    while (my $line = <$stream>) {
+        my $event = eval { decode_json($line) };
+        next if $@ || ref($event) ne 'HASH';
+        my $type = $event->{type} // '';
+        if ($type eq 'item.completed' && ref($event->{item}) eq 'HASH'
+                && ($event->{item}{type} // '') eq 'agent_message') {
+            my $text = $event->{item}{text};
+            $reply = $text if defined($text) && !ref($text) && length($text);
+        }
+        if ($type eq 'error' || $type eq 'turn.failed') {
+            my $text = $event->{message} // $event->{error};
+            $text = $text->{message} if ref($text) eq 'HASH';
+            $error = $text if defined($text) && !ref($text) && length($text);
+        }
+    }
+    close $stream;
+    open(my $err, '<:encoding(UTF-8)', $stderr) or die "$stderr: $!\n";
+    while (my $line = <$err>) {
+        $diagnostic = $line if $line =~ /\S/;
+    }
+    # Prefer the actual error on failures, even if a partial reply was emitted.
+    my $body = $result eq 'success' ? $reply : ($error || $diagnostic || $reply);
+    $body ||= "No Codex reply was received ($result).";
+    $body =~ s/\e\[[0-?]*[ -\/]*[\@-~]//g;
+    $body =~ s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
+    $body =~ s/^\s+|\s+$//g;
+    $body = substr($body, 0, 499) . "\x{2026}" if length($body) > 500;
+    binmode STDOUT, ':encoding(UTF-8)';
+    print "$body\n";
+    exit 0;
+}
 if ($mode eq 'plist') {
     local $/;
     my $template = <>;

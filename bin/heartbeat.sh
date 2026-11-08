@@ -6,6 +6,7 @@ umask 077
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SUPPORT="$ROOT/lib/heartbeat.pl"
 source "$ROOT/lib/common.sh"
+source "$ROOT/lib/notifications.sh"
 log() {
     # Keep two bounded logs. Only the lock holder writes/rotates them.
     if [[ -f "$LOGS/heartbeat.log" ]] && (( $(/usr/bin/stat -f %z "$LOGS/heartbeat.log") > 1048576 )); then
@@ -74,6 +75,7 @@ if [[ ! -x "$codex_bin" ]]; then codex_bin=$(command -v codex || true); fi
 if [[ -z "$codex_bin" || ! -x "$codex_bin" ]]; then
     write_stamp last-attempt "$(now)"
     log 'failure=executable-not-found; retry in 900 seconds (reinstall to refresh path)'
+    notify 'Failed: executable not found; retry in 15 minutes' 'Codex could not be started. Reinstall to refresh its path.'
     exit 1
 fi
 
@@ -101,11 +103,15 @@ if [[ "$result" == success ]]; then
     # Equal timestamps also represent a completed successful attempt.
     write_stamp last-attempt "$finished"
     log "success; next eligible at $((finished + INTERVAL))"
+    subtitle='Succeeded; next heartbeat in 5h 2m'
 else
     write_stamp last-attempt "$finished"
     # Retain only the latest failure, capped to 64 KiB per stream, privately.
     /usr/bin/tail -c 65536 "$run_dir/events.jsonl" > "$STATE/last-failure.jsonl"
     /usr/bin/tail -c 65536 "$run_dir/stderr" > "$STATE/last-failure.stderr"
     log "failure=$result exit=$rc; retry at $((finished + RETRY))"
-    exit 1
+    subtitle="Failed: $result; retry in 15 minutes"
 fi
+body=$(/usr/bin/perl "$SUPPORT" notification-text "$run_dir/events.jsonl" "$run_dir/stderr" "$result") || body='Codex output could not be read. See heartbeat logs.'
+notify "$subtitle" "$body"
+[[ "$result" == success ]]

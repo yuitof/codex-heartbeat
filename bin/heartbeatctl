@@ -3,7 +3,9 @@ set -euo pipefail
 umask 077
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/lib/common.sh"
+source "$ROOT/lib/notifications.sh"
 files=(bin/heartbeat.sh bin/heartbeatctl bin/schedule.sh lib/common.sh lib/heartbeat.pl
+       lib/notifications.sh lib/notify.applescript
        launchd/local.codex-heartbeat.plist.in launchd/local.codex-heartbeat.scheduler.plist.in)
 
 case "${1:-status}" in
@@ -61,6 +63,11 @@ case "${1:-status}" in
         /bin/bash "$ROOT/bin/heartbeat.sh" status
         ;;
     check) exec /bin/bash "$ROOT/bin/heartbeat.sh" check ;;
+    test-notification)
+        mkdir -p "$LOGS"
+        notify 'Notification test (no Codex request)' 'Heartbeat results will appear here. A successful Codex reply will say: OK'
+        echo 'Notification test requested. If hidden, check macOS Notifications settings, Focus, and heartbeat.log.'
+        ;;
     logs) tail -n 50 -F "$HEARTBEAT_LOG_DIR/heartbeat.log" ;;
     uninstall)
         rm -f "$STATE/enabled"
@@ -72,5 +79,5 @@ case "${1:-status}" in
         # inode, for safe reinstalls and any still-terminating child processes.
         echo 'LaunchAgents removed. State, logs and installed scripts retained.'
         ;;
-    *) echo "Usage: $0 {install|status|check|logs|uninstall}" >&2; exit 64 ;;
+    *) echo "Usage: $0 {install|status|check|logs|test-notification|uninstall}" >&2; exit 64 ;;
 esac

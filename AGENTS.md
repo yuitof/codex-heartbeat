@@ -55,3 +55,7 @@ Verify the current Codex CLI syntax and macOS `launchd` behavior against officia
 The five-hour usage window begins with the first accepted Codex message after the previous window expires. The heartbeat's local timestamp is only an approximation of the actual usage-window start, especially when other Codex sessions are active.
 
 Implement and test the solution, including failure handling, sleep/wake behavior, and duplicate-execution prevention. Do not claim that sleep/wake behavior has been tested unless it has actually been verified.
+
+# Notes
+
+- Make this app send push notifications when it runs showing what codex has said.

@@ -7,7 +7,10 @@ The implementation was checked against the official documentation linked in
 | Check | Observed result |
 | --- | --- |
 | Bash syntax and Perl compilation | Passed |
-| Offline integration suite | All 19 tests passed after the event-driven scheduling change |
+| Offline integration suite | All 24 tests passed after adding notifications |
+| Notification payloads | Success displays the actual `OK` reply; usage/network errors display diagnostic text; Unicode, quotes and script-like text remain data; long output is capped at 500 characters |
+| Notification reliability | Failed or timed-out notification submission preserves heartbeat success and retry state; eligibility checks and status commands stay silent |
+| Actual background notification | Temporary launchd job successfully submitted a native macOS test notification without calling Codex; visible banner appearance was not independently verified |
 | Failure classification | Simulated zero-exit usage limits, network errors, partial/malformed/wrong responses, unexpected tools and nonzero-exit `OK` were rejected |
 | Retry state | Failed attempts preserved success and deferred the next request for 900 seconds; later success restarted the 18,120-second interval |
 | Concurrent invocations | Eight simultaneous checks produced one fake model call |
