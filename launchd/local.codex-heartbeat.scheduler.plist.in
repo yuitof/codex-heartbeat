@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>__LABEL__.scheduler</string>
+    <key>ProgramArguments</key>
+    <array><string>/bin/bash</string><string>__INSTALL__/bin/schedule.sh</string></array>
+    <key>RunAtLoad</key><true/>
+    <key>QueueDirectories</key><array><string>__STATE__/schedule-queue</string></array>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>__EXEC_PATH__</string>
+        <key>CODEX_HOME</key><string>__AUTH_HOME__</string>
+        <key>HEARTBEAT_STATE_DIR</key><string>__STATE__</string>
+        <key>HEARTBEAT_LOG_DIR</key><string>__LOGS__</string>
+        <key>HEARTBEAT_BASE_DIR</key><string>__INSTALL__</string>
+        <key>HEARTBEAT_AGENTS_DIR</key><string>__AGENTS__</string>
+        <key>HEARTBEAT_LABEL</key><string>__LABEL__</string>
+    </dict>
+    <key>StandardOutPath</key><string>__LOGS__/launchd.log</string>
+    <key>StandardErrorPath</key><string>__LOGS__/launchd.log</string>
+    <key>Umask</key><integer>63</integer>
+</dict>
+</plist>

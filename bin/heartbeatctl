@@ -1,0 +1,76 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+source "$ROOT/lib/common.sh"
+files=(bin/heartbeat.sh bin/heartbeatctl bin/schedule.sh lib/common.sh lib/heartbeat.pl
+       launchd/local.codex-heartbeat.plist.in launchd/local.codex-heartbeat.scheduler.plist.in)
+
+case "${1:-status}" in
+    install)
+        [[ $(uname -s) == Darwin ]] || { echo 'macOS is required.' >&2; exit 1; }
+        codex_bin=${HEARTBEAT_CODEX_BIN:-$(command -v codex || true)}
+        [[ "$codex_bin" == /* && -x "$codex_bin" ]] || { echo 'Install Codex CLI and put codex on PATH first.' >&2; exit 1; }
+        help=$("$codex_bin" exec --help 2>&1)
+        for flag in --ephemeral --json --ignore-user-config --ignore-rules --sandbox; do
+            [[ "$help" == *"$flag"* ]] || { echo "Codex CLI is missing $flag; update it first." >&2; exit 1; }
+        done
+        mkdir -p "$BASE/bin" "$BASE/lib" "$BASE/launchd" "$STATE/schedule-queue" "$LOGS" "$AGENTS"
+        chmod 700 "$BASE" "$BASE/bin" "$BASE/lib" "$BASE/launchd" "$STATE" "$LOGS"
+        # Stop an older copy only when files or configuration actually change.
+        changed=0
+        for relative in "${files[@]}"; do
+            if ! cmp -s "$ROOT/$relative" "$BASE/$relative"; then changed=1; fi
+        done
+        # Include the detected executable's directory, including npm/node if used.
+        case ":$PATH:" in *":$(dirname "$codex_bin"):"*) ;; *) export PATH="$(dirname "$codex_bin"):$PATH" ;; esac
+        pending=$(mktemp "$AGENTS/.codex-heartbeat.XXXXXX")
+        trap 'rm -f "$pending"' EXIT
+        render_plist local.codex-heartbeat.scheduler.plist.in > "$pending"
+        /usr/bin/plutil -lint "$pending" > /dev/null
+        if ! cmp -s "$pending" "$SCHEDULER_PLIST" || [[ ! -r "$BASE/codex-path" ]] || [[ $(cat "$BASE/codex-path" 2>/dev/null || true) != "$codex_bin" ]]; then changed=1; fi
+        if (( changed )); then
+            for target in "$SERVICE.scheduler" "$SERVICE"; do
+                if "$LAUNCHCTL" print "$target" > /dev/null 2>&1; then "$LAUNCHCTL" bootout "$target"; fi
+            done
+        fi
+        for relative in "${files[@]}"; do
+            if ! cmp -s "$ROOT/$relative" "$BASE/$relative"; then
+                /usr/bin/install -m 700 "$ROOT/$relative" "$BASE/$relative.new"
+                mv -f "$BASE/$relative.new" "$BASE/$relative"
+            fi
+        done
+        printf '%s\n' "$codex_bin" > "$BASE/codex-path.new"
+        mv -f "$BASE/codex-path.new" "$BASE/codex-path"
+        chmod 600 "$pending"
+        mv -f "$pending" "$SCHEDULER_PLIST"
+        touch "$STATE/enabled"
+        if (( changed )); then touch "$STATE/schedule-queue/pending"; fi
+        "$LAUNCHCTL" enable "$SERVICE"
+        "$LAUNCHCTL" enable "$SERVICE.scheduler"
+        if ! "$LAUNCHCTL" print "$SERVICE.scheduler" > /dev/null 2>&1; then
+            "$LAUNCHCTL" bootstrap "$DOMAIN" "$SCHEDULER_PLIST"
+        elif ! "$LAUNCHCTL" print "$SERVICE" > /dev/null 2>&1; then
+            touch "$STATE/schedule-queue/pending"
+        fi
+        printf 'Installed %s\nCodex: %s\nThe scheduler arms only the next due heartbeat.\n' "$SCHEDULER_PLIST" "$codex_bin"
+        ;;
+    status)
+        if "$LAUNCHCTL" print "$SERVICE" > /dev/null 2>&1; then echo 'LaunchAgent: loaded'; else echo 'LaunchAgent: not loaded'; fi
+        if "$LAUNCHCTL" print "$SERVICE.scheduler" > /dev/null 2>&1; then echo 'Scheduler: loaded'; else echo 'Scheduler: not loaded'; fi
+        /bin/bash "$ROOT/bin/heartbeat.sh" status
+        ;;
+    check) exec /bin/bash "$ROOT/bin/heartbeat.sh" check ;;
+    logs) tail -n 50 -F "$HEARTBEAT_LOG_DIR/heartbeat.log" ;;
+    uninstall)
+        rm -f "$STATE/enabled"
+        for target in "$SERVICE.scheduler" "$SERVICE"; do
+            if "$LAUNCHCTL" print "$target" > /dev/null 2>&1; then "$LAUNCHCTL" bootout "$target"; fi
+        done
+        rm -f "$PLIST" "$SCHEDULER_PLIST"
+        # Preserve timestamps, logs and installed sources, including the lock
+        # inode, for safe reinstalls and any still-terminating child processes.
+        echo 'LaunchAgents removed. State, logs and installed scripts retained.'
+        ;;
+    *) echo "Usage: $0 {install|status|check|logs|uninstall}" >&2; exit 64 ;;
+esac
